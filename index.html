@@ -27,6 +27,17 @@
     margin-bottom: 16px;
   }
   .controls label { font-size: 1.05rem; display: flex; align-items: center; gap: 6px; }
+  .opgroup { display: flex; flex-direction: column; align-items: center; gap: 8px; }
+  .sets { font-size: 0.95rem; display: flex; align-items: center; gap: 4px; }
+  .sets input {
+    width: 52px;
+    font-size: 1rem;
+    padding: 4px;
+    border: 2px solid #ccc;
+    border-radius: 6px;
+    text-align: center;
+  }
+  .sets.hidden { display: none; }
   #target {
     width: 80px;
     font-size: 1.25rem;
@@ -116,8 +127,14 @@
 
 <div class="controls">
   <label>target <input type="number" id="target" value="13"></label>
-  <label class="opbox"><input type="checkbox" id="opPlus" checked> +</label>
-  <label class="opbox"><input type="checkbox" id="opMinus"> &minus;</label>
+  <div class="opgroup">
+    <label class="opbox"><input type="checkbox" id="opPlus" checked> +</label>
+    <label class="sets" id="plusSets"><span>Sets:</span> <input type="number" id="plusSetsInput" value="1" min="1"></label>
+  </div>
+  <div class="opgroup">
+    <label class="opbox"><input type="checkbox" id="opMinus"> &minus;</label>
+    <label class="sets hidden" id="minusSets"><span>Sets:</span> <input type="number" id="minusSetsInput" value="1" min="1"></label>
+  </div>
 </div>
 
 <div class="frame" id="frame">
@@ -170,6 +187,19 @@ for (let r = 0; r < 3; r++) {
   }
 }
 
+// Each operation has its own "Sets" field that only shows while the op is on.
+// A "set" is one full pool of the numbers 1-9 for that operation, so the
+// number controls how many times each number can be reused for that sign.
+function syncSets() {
+  document.getElementById('plusSets')
+    .classList.toggle('hidden', !document.getElementById('opPlus').checked);
+  document.getElementById('minusSets')
+    .classList.toggle('hidden', !document.getElementById('opMinus').checked);
+}
+document.getElementById('opPlus').addEventListener('change', syncSets);
+document.getElementById('opMinus').addEventListener('change', syncSets);
+syncSets();
+
 document.querySelectorAll('.arrow').forEach(btn => {
   btn.addEventListener('click', () => {
     const dir = btn.dataset.dir;
@@ -188,7 +218,7 @@ document.getElementById('removeBtn').addEventListener('click', () => {
 
 document.getElementById('solveBtn').addEventListener('click', () => {
   const status = document.getElementById('status');
-  status.textContent = 'Solving…';
+  status.textContent = 'Resim…';
   document.getElementById('results').innerHTML = '';
   document.getElementById('legend').innerHTML = '';
   // let the "Solving…" message paint before the search blocks the page
@@ -202,12 +232,22 @@ function solve() {
   results.innerHTML = '';
 
   const target = parseInt(document.getElementById('target').value, 10);
-  if (isNaN(target)) { status.textContent = 'Enter a target number.'; return; }
+  if (isNaN(target)) { status.textContent = 'Zadej cilove cislo.'; return; }
 
   const usePlus = document.getElementById('opPlus').checked;
   const useMinus = document.getElementById('opMinus').checked;
-  if (!usePlus && !useMinus) { status.textContent = 'Select + and/or −.'; return; }
-  if (active.size === 0) { status.textContent = 'Draw at least one arrow.'; return; }
+  if (!usePlus && !useMinus) { status.textContent = 'Vyber + a/nebo −.'; return; }
+  if (active.size === 0) { status.textContent = 'Nakresli aspon jednu sipku.'; return; }
+
+  // How many copies of each number 1-9 are available per role. An unselected
+  // operation has no pool. With both selected (or sets > 1) a number can be
+  // reused, e.g. once as a + tile and once as a − tile.
+  const addSets = usePlus  ? Math.max(1, parseInt(document.getElementById('plusSetsInput').value, 10)  || 1) : 0;
+  const subSets = useMinus ? Math.max(1, parseInt(document.getElementById('minusSetsInput').value, 10) || 1) : 0;
+  const canRepeat = (usePlus && useMinus) || addSets > 1 || subSets > 1;
+  // The first number of a line just starts the expression; it draws from the
+  // + pool when available, otherwise from the − pool.
+  const starterSign = usePlus ? 1 : -1;
 
   const lines = [];
   for (const dir of active) for (const ln of DIRS[dir]) lines.push(ln);
@@ -217,17 +257,17 @@ function solve() {
   // starts the expression, the other two add or subtract by their tile role.
   const SIGNS = usePlus && useMinus ? [1, -1] : usePlus ? [1] : [-1];
 
-  // Quick check: if no three distinct numbers can ever make the target,
-  // skip the whole search.
+  // Quick check: if no three numbers can ever make the target, skip the whole
+  // search. Repeats are only considered when the pools actually allow them.
   let feasible = false;
   for (let a = 1; a <= 9 && !feasible; a++)
     for (let b = 1; b <= 9 && !feasible; b++)
       for (let c = 1; c <= 9 && !feasible; c++) {
-        if (a === b || b === c || a === c) continue;
+        if (!canRepeat && (a === b || b === c || a === c)) continue;
         for (const sb of SIGNS) for (const sc of SIGNS)
           if (a + sb * b + sc * c === target) feasible = true;
       }
-  if (!feasible) { status.textContent = 'No solutions found.'; return; }
+  if (!feasible) { status.textContent = 'Zadne reseni nenalezeno.'; return; }
 
   // A tile's role only matters where it is NOT the first number of a line.
   const needsSign = new Array(9).fill(false);
@@ -271,7 +311,9 @@ function solve() {
   let overflow = false;
   const grid = new Array(9);
   const sign = new Array(9).fill(1);
-  const used = new Array(10).fill(false);
+  // How many copies of each number are currently placed in each role.
+  const usedAdd = new Array(10).fill(0);
+  const usedSub = new Array(10).fill(0);
   let hits = 0;
 
   (function place(d) {
@@ -280,7 +322,7 @@ function solve() {
     if (d === 9) {
       if (hits < best) return;
       if (hits > best) { best = hits; sols = new Map(); overflow = false; }
-      const key = grid.join('');
+      const key = grid.join('') + '|' + sign.map(s => s > 0 ? '+' : '-').join('');
       if (!sols.has(key)) {
         if (sols.size >= MAX_COUNT) { overflow = true; return; }
         sols.set(key, { g: grid.slice(), s: sign.slice() });
@@ -288,12 +330,13 @@ function solve() {
       return;
     }
     const cell = order[d];
-    const cellSigns = needsSign[cell] ? SIGNS : [1];
+    const cellSigns = needsSign[cell] ? SIGNS : [starterSign];
     for (let n = 1; n <= 9; n++) {
-      if (used[n]) continue;
-      used[n] = true;
       grid[cell] = n;
       for (const sg of cellSigns) {
+        // Draw a card of this number from the matching pool, if one is left.
+        if (sg > 0) { if (usedAdd[n] >= addSets) continue; usedAdd[n]++; }
+        else        { if (usedSub[n] >= subSets) continue; usedSub[n]++; }
         sign[cell] = sg;
         let add = 0;
         for (const ln of completesAt[d]) {
@@ -302,22 +345,21 @@ function solve() {
         hits += add;
         place(d + 1);
         hits -= add;
+        if (sg > 0) usedAdd[n]--; else usedSub[n]--;
       }
-      used[n] = false;
     }
   })(0);
 
   const total = sols.size;
   status.textContent = best === 0
-    ? 'No solutions found.'
-    : 'Best: ' + best + ' of ' + lines.length + ' line' + (lines.length === 1 ? '' : 's') +
-      ' hit ' + target + ' — ' + (overflow ? MAX_COUNT + '+' : total) +
-      ' arrangement' + (total === 1 ? '' : 's') +
-      (total > MAX_SHOW ? ' (showing first ' + MAX_SHOW + ')' : '') + '.';
+    ? 'Zadne reseni nenalezeno.'
+    : 'Nejlepsi: ' + best + ' z ' + lines.length + ' radku dava ' + target +
+      ' — ' + (overflow ? MAX_COUNT + '+' : total) + ' usporadani' +
+      (total > MAX_SHOW ? ' (zobrazeno prvnich ' + MAX_SHOW + ')' : '') + '.';
 
   legend.innerHTML = best === 0 ? '' :
-    '<span class="add">+ tiles</span>' +
-    (useMinus ? '<span class="sub">&minus; tiles</span>' : '');
+    '<span class="add">+ kosticky</span>' +
+    (useMinus ? '<span class="sub">&minus; kosticky</span>' : '');
 
   const frag = document.createDocumentFragment();
   let shown = 0;
